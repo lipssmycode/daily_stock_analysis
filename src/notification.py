@@ -620,6 +620,7 @@ class NotificationService:
             ])
             for r in sorted_results:
                 emoji = r.get_emoji()
+                report_lines.append("")
                 report_lines.append(
                     f"{emoji} **{r.name}({r.code})**: {r.operation_advice} | "
                     f"评分 {r.sentiment_score} | {r.trend_prediction}"
@@ -1105,14 +1106,16 @@ class NotificationService:
                     lines.append("### 📰 重要信息")
                     lines.append("")
                     info_added = True
-                lines.append(f"📊 **业绩预期**: {intel['earnings_outlook'][:100]}")
+                lines.append("")
+                lines.append(f"\n📊 **业绩预期**: {intel['earnings_outlook'][:100]}")
             
             if intel.get('sentiment_summary'):
                 if not info_added:
                     lines.append("### 📰 重要信息")
                     lines.append("")
                     info_added = True
-                lines.append(f"💭 **舆情情绪**: {intel['sentiment_summary'][:80]}")
+                lines.append("")
+                lines.append(f"\n💭 **舆情情绪**: {intel['sentiment_summary'][:80]}")
             
             # 风险警报
             risks = intel.get('risk_alerts', [])
