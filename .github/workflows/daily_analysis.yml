@@ -51,6 +51,9 @@ jobs:
           
           # 数据源 (可选)
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          LONGPORT_APP_KEY: ${{ secrets.LONGPORT_APP_KEY }}
+          LONGPORT_APP_SECRET: ${{ secrets.LONGPORT_APP_SECRET }}
+          LONGPORT_ACCESS_TOKEN: ${{ secrets.LONGPORT_ACCESS_TOKEN }}
           
           # 搜索服务
           BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
@@ -85,6 +88,9 @@ jobs:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_FOLDER_TOKEN: ${{ secrets.FEISHU_FOLDER_TOKEN }}
+          # 方式八：Server酱
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          SERVERCHAN_UID: ${{ secrets.SERVERCHAN_UID }}
 
           
           # 自选股列表 (从 secrets 或使用默认值)

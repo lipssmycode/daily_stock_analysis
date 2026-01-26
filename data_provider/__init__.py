@@ -29,6 +29,7 @@
 
 from .base import BaseFetcher, DataFetcherManager
 from .efinance_fetcher import EfinanceFetcher
+from .longbridge_fetcher import LongbridgeFetcher
 from .akshare_fetcher import AkshareFetcher
 from .tushare_fetcher import TushareFetcher
 from .baostock_fetcher import BaostockFetcher
@@ -38,6 +39,7 @@ __all__ = [
     'BaseFetcher',
     'DataFetcherManager',
     'EfinanceFetcher',
+    'LongbridgeFetcher',
     'AkshareFetcher',
     'TushareFetcher',
     'BaostockFetcher',

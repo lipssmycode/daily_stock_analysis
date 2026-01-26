@@ -45,7 +45,8 @@ from config import get_config, Config
 from storage import get_db, DatabaseManager
 from data_provider import DataFetcherManager
 from data_provider.akshare_fetcher import AkshareFetcher, RealtimeQuote, ChipDistribution
-from analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
+from analyzer import GeminiAnalyzer, AnalysisResult
+from stock_name import STOCK_NAME_MAP
 from notification import NotificationService, NotificationChannel, send_daily_report
 from bot.models import BotMessage
 from search_service import SearchService, SearchResponse
@@ -662,6 +663,8 @@ class StockAnalysisPipeline:
                         non_wechat_success = self.notifier.send_to_email(report) or non_wechat_success
                     elif channel == NotificationChannel.CUSTOM:
                         non_wechat_success = self.notifier.send_to_custom(report) or non_wechat_success
+                    elif channel == NotificationChannel.SERVERCHAN:
+                        non_wechat_success = self.notifier.send_to_serverchan(report) or non_wechat_success
                     else:
                         logger.warning(f"未知通知渠道: {channel}")
 

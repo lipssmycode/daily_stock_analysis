@@ -39,6 +39,11 @@ class Config:
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
     
+    # === Longbridge 配置 ===
+    longport_app_key: Optional[str] = None
+    longport_app_secret: Optional[str] = None
+    longport_access_token: Optional[str] = None
+    
     # === AI 分析配置 ===
     gemini_api_key: Optional[str] = None
     gemini_model: str = "gemini-3-flash-preview"  # 主模型
@@ -98,6 +103,10 @@ class Config:
 
     # PushPlus 推送配置
     pushplus_token: Optional[str] = None  # PushPlus Token
+
+    # Server酱推送配置（方糖推送）
+    serverchan_sendkey: Optional[str] = None  # Server酱 SendKey（格式: sctp{uid}t...）
+    serverchan_uid: Optional[str] = None  # Server酱 UID（可选，用于验证）
 
     # 分析间隔时间（秒）- 用于避免API限流
     analysis_delay: float = 0.0  # 个股分析与大盘分析之间的延迟
@@ -225,6 +234,9 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
+            longport_app_key=os.getenv('LONGPORT_APP_KEY'),
+            longport_app_secret=os.getenv('LONGPORT_APP_SECRET'),
+            longport_access_token=os.getenv('LONGPORT_ACCESS_TOKEN'),
             gemini_api_key=os.getenv('GEMINI_API_KEY'),
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview'),
             gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash'),
@@ -247,6 +259,8 @@ class Config:
             pushover_user_key=os.getenv('PUSHOVER_USER_KEY'),
             pushover_api_token=os.getenv('PUSHOVER_API_TOKEN'),
             pushplus_token=os.getenv('PUSHPLUS_TOKEN'),
+            serverchan_sendkey=os.getenv('SERVERCHAN_SENDKEY'),
+            serverchan_uid=os.getenv('SERVERCHAN_UID'),
             custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
             custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
             discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
@@ -356,6 +370,7 @@ class Config:
             (self.email_sender and self.email_password) or
             (self.pushover_user_key and self.pushover_api_token) or
             self.pushplus_token or
+            self.serverchan_sendkey or
             (self.custom_webhook_urls and self.custom_webhook_bearer_token) or
             (self.discord_bot_token and self.discord_main_channel_id) or
             self.discord_webhook_url

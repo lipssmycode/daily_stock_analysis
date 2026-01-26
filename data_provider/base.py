@@ -264,12 +264,14 @@ class DataFetcherManager:
         - 如果配置了 TUSHARE_TOKEN：Tushare 优先级提升为 0（最高）
         - 否则按默认优先级：
           0. EfinanceFetcher (Priority 0) - 最高优先级
-          1. AkshareFetcher (Priority 1)
-          2. TushareFetcher (Priority 2)
-          3. BaostockFetcher (Priority 3)
-          4. YfinanceFetcher (Priority 4)
+          1. LongbridgeFetcher (Priority 1)
+          2. AkshareFetcher (Priority 1)
+          3. TushareFetcher (Priority 2)
+          4. BaostockFetcher (Priority 3)
+          5. YfinanceFetcher (Priority 4)
         """
         from .efinance_fetcher import EfinanceFetcher
+        from .longbridge_fetcher import LongbridgeFetcher
         from .akshare_fetcher import AkshareFetcher
         from .tushare_fetcher import TushareFetcher
         from .baostock_fetcher import BaostockFetcher
@@ -280,6 +282,7 @@ class DataFetcherManager:
 
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
+        longbridge = LongbridgeFetcher()
         akshare = AkshareFetcher()
         tushare = TushareFetcher()  # 会根据 Token 配置自动调整优先级
         baostock = BaostockFetcher()
@@ -288,6 +291,7 @@ class DataFetcherManager:
         # 初始化数据源列表
         self._fetchers = [
             efinance,
+            longbridge,
             akshare,
             tushare,
             baostock,

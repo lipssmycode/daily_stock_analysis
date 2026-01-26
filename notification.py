@@ -45,6 +45,7 @@ class NotificationChannel(Enum):
     PUSHPLUS = "pushplus"  # PushPlus（国内推送服务）
     CUSTOM = "custom"      # 自定义 Webhook
     DISCORD = "discord"    # Discord 机器人 (Bot)
+    SERVERCHAN = "serverchan"  # Server酱（方糖推送）
     UNKNOWN = "unknown"    # 未知
 
 
@@ -92,6 +93,7 @@ class ChannelDetector:
             NotificationChannel.PUSHPLUS: "PushPlus",
             NotificationChannel.CUSTOM: "自定义Webhook",
             NotificationChannel.DISCORD: "Discord机器人",
+            NotificationChannel.SERVERCHAN: "Server酱",
             NotificationChannel.UNKNOWN: "未知渠道",
         }
         return names.get(channel, "未知渠道")
@@ -162,7 +164,13 @@ class NotificationService:
             'channel_id': getattr(config, 'discord_main_channel_id', None),
             'webhook_url': getattr(config, 'discord_webhook_url', None),
         }
-        
+
+        # Server酱配置
+        self._serverchan_config = {
+            'sendkey': getattr(config, 'serverchan_sendkey', None),
+            'uid': getattr(config, 'serverchan_uid', None),
+        }
+
         # 消息长度限制（字节）
         self._feishu_max_bytes = getattr(config, 'feishu_max_bytes', 20000)
         self._wechat_max_bytes = getattr(config, 'wechat_max_bytes', 4000)
@@ -219,7 +227,11 @@ class NotificationService:
         # Discord
         if self._is_discord_configured():
             channels.append(NotificationChannel.DISCORD)
-        
+
+        # Server酱
+        if self._is_serverchan_configured():
+            channels.append(NotificationChannel.SERVERCHAN)
+
         return channels
     
     def _is_telegram_configured(self) -> bool:
@@ -240,7 +252,22 @@ class NotificationService:
     def _is_pushover_configured(self) -> bool:
         """检查 Pushover 配置是否完整"""
         return bool(self._pushover_config['user_key'] and self._pushover_config['api_token'])
-    
+
+    def _is_serverchan_configured(self) -> bool:
+        """检查 Server酱配置是否完整"""
+        sendkey = self._serverchan_config['sendkey']
+        if not sendkey:
+            return False
+        # 如果配置了 uid，从 sendkey 中提取验证
+        uid = self._serverchan_config['uid']
+        if uid:
+            # sendkey 格式: sctp{uid}t...
+            import re
+            match = re.match(r'^sctp(\d+)t', sendkey)
+            if match and match.group(1) != str(uid):
+                logger.warning(f"Server酱 uid 不匹配: sendkey中的uid={match.group(1)}, 配置的uid={uid}")
+        return True
+
     def is_available(self) -> bool:
         """检查通知服务是否可用（至少有一个渠道或上下文渠道）"""
         return len(self._available_channels) > 0 or self._has_context_channel()
@@ -566,6 +593,7 @@ class NotificationService:
             ])
             for r in sorted_results:
                 emoji = r.get_emoji()
+                report_lines.append("")
                 report_lines.append(
                     f"{emoji} **{r.name}({r.code})**: {r.operation_advice} | "
                     f"评分 {r.sentiment_score} | {r.trend_prediction}"
@@ -1051,14 +1079,16 @@ class NotificationService:
                     lines.append("### 📰 重要信息")
                     lines.append("")
                     info_added = True
-                lines.append(f"📊 **业绩预期**: {intel['earnings_outlook'][:100]}")
+                lines.append("")
+                lines.append(f"\n📊 **业绩预期**: {intel['earnings_outlook'][:100]}")
             
             if intel.get('sentiment_summary'):
                 if not info_added:
                     lines.append("### 📰 重要信息")
                     lines.append("")
                     info_added = True
-                lines.append(f"💭 **舆情情绪**: {intel['sentiment_summary'][:80]}")
+                lines.append("")
+                lines.append(f"\n💭 **舆情情绪**: {intel['sentiment_summary'][:80]}")
             
             # 风险警报
             risks = intel.get('risk_alerts', [])
@@ -2618,6 +2648,81 @@ class NotificationService:
             logger.error(f"发送 PushPlus 消息失败: {e}")
             return False
 
+    def send_to_serverchan(self, content: str, title: Optional[str] = None) -> bool:
+        """
+        推送消息到 Server酱（方糖推送）
+
+        Server酱 API 格式：
+        POST https://<uid>.push.ft07.com/send/<sendkey>.send
+        或 GET https://<uid>.push.ft07.com/send/<sendkey>.send?title=<title>&desp=<desp>
+
+        参数：
+        - title/text (string, 必填): 推送的标题
+        - desp (string, 可选): 推送的正文内容，支持markdown
+        - tags (string, 可选): 标签列表，多个标签使用竖线分隔
+        - short (string, 可选): 推送消息的简短描述
+
+        Server酱 特点：
+        - 极简风格，仅仅在浏览器中输入URL就可以发送推送
+        - 支持 POST 和 GET 两种方式
+        - 支持 Markdown 格式（在APP中显示）
+        - 免费额度充足
+
+        Args:
+            content: 消息内容（Markdown 格式）
+            title: 消息标题（可选）
+
+        Returns:
+            是否发送成功
+        """
+        sendkey = self._serverchan_config['sendkey']
+        if not sendkey:
+            logger.warning("Server酱 SendKey 未配置，跳过推送")
+            return False
+
+        # 从 sendkey 中提取 uid（格式: sctp{uid}t...）
+        import re
+        match = re.match(r'^sctp(\d+)t', sendkey)
+        if not match:
+            logger.error("Server酱 SendKey 格式错误，应为 sctp{uid}t... 格式")
+            return False
+
+        uid = match.group(1)
+
+        # 构建API URL
+        api_url = f"https://{uid}.push.ft07.com/send/{sendkey}.send"
+
+        # 处理消息标题
+        if title is None:
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            title = f"📈 股票分析报告 - {date_str}"
+
+        try:
+            # 使用 POST 方式发送
+            payload = {
+                "title": title,
+                "desp": content
+            }
+
+            response = requests.post(api_url, json=payload, timeout=10)
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('code') == 0:
+                    logger.info("Server酱 消息发送成功")
+                    return True
+                else:
+                    error_msg = result.get('message', result.get('msg', '未知错误'))
+                    logger.error(f"Server酱 返回错误: {error_msg}")
+                    return False
+            else:
+                logger.error(f"Server酱 请求失败: HTTP {response.status_code}")
+                return False
+
+        except Exception as e:
+            logger.error(f"发送 Server酱 消息失败: {e}")
+            return False
+
     def send_to_discord(self, content: str) -> bool:
         """
         推送消息到 Discord（支持 Webhook 和 Bot API）
@@ -2753,6 +2858,8 @@ class NotificationService:
                     result = self.send_to_custom(content)
                 elif channel == NotificationChannel.DISCORD:
                     result = self.send_to_discord(content)
+                elif channel == NotificationChannel.SERVERCHAN:
+                    result = self.send_to_serverchan(content)
                 else:
                     logger.warning(f"不支持的通知渠道: {channel}")
                     result = False

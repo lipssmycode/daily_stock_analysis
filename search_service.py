@@ -799,6 +799,7 @@ class SearchService:
         # 业绩预期
         if 'earnings' in intel_results:
             resp = intel_results['earnings']
+            lines.append("")
             lines.append(f"\n📊 业绩预期 (来源: {resp.provider}):")
             if resp.success and resp.results:
                 for i, r in enumerate(resp.results[:3], 1):
