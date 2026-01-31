@@ -244,13 +244,62 @@ class StockAnalysisPipeline:
             # Step 1: 获取实时行情（量比、换手率等）
             realtime_quote: Optional[RealtimeQuote] = None
             try:
-                realtime_quote = self.akshare_fetcher.get_realtime_quote(code)
+                # 优先使用 Longbridge 的 calc_indexes 接口获取实时行情
+                from data_provider.longbridge_fetcher import LongbridgeFetcher
+                lb_fetcher = LongbridgeFetcher()
+                
+                if lb_fetcher.is_available():
+                    logger.info(f"[{code}] 尝试使用 Longbridge calc_indexes 获取实时行情...")
+                    
+                    # 转换为 Longbridge 格式
+                    lb_symbol = self.config.convert_to_full_code(code) if hasattr(self.config, 'convert_to_full_code') else code
+                    if not ('.' in lb_symbol):
+                        if lb_symbol.startswith(('600', '601', '603', '688')):
+                            lb_symbol = f"{lb_symbol}.SH"
+                        elif lb_symbol.startswith(('000', '002', '300')):
+                            lb_symbol = f"{lb_symbol}.SZ"
+                    
+                    # 使用 calc_indexes 接口获取实时行情和计算指标
+                    quotes_dict = lb_fetcher.get_realtime_quote_with_indexes([lb_symbol])
+                    
+                    if quotes_dict and lb_symbol in quotes_dict:
+                        quote_data = quotes_dict[lb_symbol]
+                        
+                        # 转换为 RealtimeQuote 对象
+                        realtime_quote = RealtimeQuote(
+                            code=code,
+                            name=STOCK_NAME_MAP.get(code, ''),
+                            price=quote_data.get('最新价', 0.0),
+                            change_pct=quote_data.get('涨跌幅', 0.0),
+                            change_amount=quote_data.get('涨跌额', 0.0),
+                            volume_ratio=quote_data.get('量比', 0.0),
+                            turnover_rate=quote_data.get('换手率', 0.0),
+                            amplitude=quote_data.get('振幅', 0.0),
+                            pe_ratio=quote_data.get('市盈率', 0.0),
+                            pb_ratio=quote_data.get('市净率', 0.0),
+                            total_mv=quote_data.get('总市值', 0.0),
+                            circ_mv=quote_data.get('总市值', 0.0),  # Longbridge 只返回总市值，暂时用总市值代替流通市值
+                            change_60d=quote_data.get('半年涨幅', 0.0),
+                            high_52w=0.0,  # Longbridge 不提供
+                            low_52w=0.0,   # Longbridge 不提供
+                        )
+                        
+                        if realtime_quote.name:
+                            stock_name = realtime_quote.name
+                        logger.info(f"[{code}] [Longbridge] {stock_name} 实时行情: 价格={realtime_quote.price}, "
+                                  f"量比={realtime_quote.volume_ratio}, 换手率={realtime_quote.turnover_rate}%, "
+                                  f"PE={realtime_quote.pe_ratio}, PB={realtime_quote.pb_ratio}")
+                    else:
+                        logger.warning(f"[{code}] [Longbridge] 未获取到实时行情，降级到 Akshare")
+                        realtime_quote = self.akshare_fetcher.get_realtime_quote(code)
+                else:
+                    logger.info(f"[{code}] Longbridge 不可用，使用 Akshare 获取实时行情")
+                    realtime_quote = self.akshare_fetcher.get_realtime_quote(code)
+                
                 if realtime_quote:
                     # 使用实时行情返回的真实股票名称
                     if realtime_quote.name:
                         stock_name = realtime_quote.name
-                    logger.info(f"[{code}] {stock_name} 实时行情: 价格={realtime_quote.price}, "
-                              f"量比={realtime_quote.volume_ratio}, 换手率={realtime_quote.turnover_rate}%")
             except Exception as e:
                 logger.warning(f"[{code}] 获取实时行情失败: {e}")
             

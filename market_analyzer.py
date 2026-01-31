@@ -196,8 +196,60 @@ class MarketAnalyzer:
         try:
             logger.info("[大盘] 获取市场涨跌统计...")
             
-            # 获取全部A股实时行情
-            df = self._call_akshare_with_retry(ak.stock_zh_a_spot_em, "A股实时行情", attempts=2)
+            df = None
+            
+            # 优先使用 Longbridge 获取全部 A 股实时行情
+            try:
+                from stock_name import STOCK_NAME_MAP
+                from data_provider.longbridge_fetcher import LongbridgeFetcher
+                
+                lb_fetcher = LongbridgeFetcher()
+                
+                if lb_fetcher.is_available():
+                    logger.info("[大盘] 尝试使用 Longbridge 获取全部 A 股实时行情...")
+                    
+                    # 从 STOCK_NAME_MAP 提取 A 股代码
+                    a_stock_codes = []
+                    for code in STOCK_NAME_MAP.keys():
+                        # 只提取 A 股（沪市：600xxx, 601xxx, 603xxx, 688xxx；深市：000xxx, 002xxx, 300xxx）
+                        if code.startswith(('600', '601', '603', '688', '000', '002', '300')):
+                            # 转换为 Longbridge 格式
+                            if code.startswith(('600', '601', '603', '688')):
+                                a_stock_codes.append(f"{code}.SH")
+                            else:
+                                a_stock_codes.append(f"{code}.SZ")
+                    
+                    # 批量获取（最多 500 个，分批处理）
+                    batch_size = 500
+                    all_quotes = []
+                    
+                    for i in range(0, len(a_stock_codes), batch_size):
+                        batch = a_stock_codes[i:i + batch_size]
+                        logger.info(f"[大盘] Longbridge 批次 {i//batch_size + 1}/{(len(a_stock_codes) + batch_size - 1)//batch_size}，{len(batch)} 只股票")
+                        
+                        quotes_dict = lb_fetcher.get_realtime_quote_batch(batch)
+                        if quotes_dict:
+                            all_quotes.extend(quotes_dict.values())
+                    
+                    # 转换为 DataFrame
+                    if all_quotes:
+                        # 映射字段名到 Akshare 格式
+                        df = pd.DataFrame(all_quotes)
+                        # 重命名字段以兼容后续处理逻辑
+                        df = df.rename(columns={
+                            '最新价': '最新价',
+                            '涨跌幅': '涨跌幅',
+                            '成交额': '成交额',
+                        })
+                        logger.info(f"[大盘] Longbridge 获取到 {len(df)} 只 A 股的实时行情")
+                    
+            except Exception as e:
+                logger.warning(f"[大盘] Longbridge 获取 A 股实时行情失败: {e}，降级到 Akshare")
+            
+            # 如果 Longbridge 不可用或失败，使用 Akshare
+            if df is None:
+                logger.info("[大盘] 使用 Akshare 获取 A 股实时行情...")
+                df = self._call_akshare_with_retry(ak.stock_zh_a_spot_em, "A股实时行情", attempts=2)
             
             if df is not None and not df.empty:
                 # 涨跌统计
@@ -263,10 +315,10 @@ class MarketAnalyzer:
     #     """获取北向资金流入"""
     #     try:
     #         logger.info("[大盘] 获取北向资金...")
-            
+    #
     #         # 获取北向资金数据
     #         df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
-            
+    #
     #         if df is not None and not df.empty:
     #             # 取最新一条数据
     #             latest = df.iloc[-1]
@@ -274,9 +326,9 @@ class MarketAnalyzer:
     #                 overview.north_flow = float(latest['当日净流入']) / 1e8  # 转为亿元
     #             elif '净流入' in df.columns:
     #                 overview.north_flow = float(latest['净流入']) / 1e8
-                    
+    #
     #             logger.info(f"[大盘] 北向资金净流入: {overview.north_flow:.2f}亿")
-                
+    #
     #     except Exception as e:
     #         logger.warning(f"[大盘] 获取北向资金失败: {e}")
     
@@ -396,7 +448,7 @@ class MarketAnalyzer:
                 title = n.get('title', '')[:50]
                 snippet = n.get('snippet', '')[:100]
             news_text += f"{i}. {title}\n   {snippet}\n"
-        
+
         prompt = f"""你是一位专业的A股市场分析师，请根据以下数据生成一份简洁的大盘复盘报告。
 
 【重要】输出要求：
@@ -419,7 +471,7 @@ class MarketAnalyzer:
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
 - 两市成交额: {overview.total_amount:.0f} 亿元
-- 北向资金: {overview.north_flow:+.2f} 亿元
+{f"- 北向资金: {overview.north_flow:+.2f} 亿元" if overview.north_flow > 0.0 else "- 北向资金: 暂无北向资金数据"}
 
 ## 板块表现
 领涨: {top_sectors_text}

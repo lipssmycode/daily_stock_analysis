@@ -574,7 +574,7 @@ class AkshareFetcher(BaseFetcher):
     def _get_stock_realtime_quote(self, stock_code: str) -> Optional[RealtimeQuote]:
         """
         获取普通 A 股实时行情数据
-        
+
         数据来源：ak.stock_zh_a_spot_em()
         包含：量比、换手率、市盈率、市净率、总市值、流通市值等
         """
@@ -656,7 +656,7 @@ class AkshareFetcher(BaseFetcher):
                 low_52w=safe_float(row.get('52周最低')),
             )
             
-            logger.info(f"[实时行情] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
+            logger.info(f"[实时行情] [Akshare] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
                        f"量比={quote.volume_ratio}, 换手率={quote.turnover_rate}%, "
                        f"PE={quote.pe_ratio}, PB={quote.pb_ratio}")
             return quote

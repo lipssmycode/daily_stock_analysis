@@ -108,8 +108,10 @@ class YfinanceFetcher(BaseFetcher):
         """
         import yfinance as yf
         
-        # 转换代码格式
-        yf_code = self._convert_stock_code(stock_code)
+        # 优先使用 stock_full_code_list 中的完整代码
+        appropriate_code = self.get_appropriate_stock_code(stock_code)
+        # 转换代码格式（如果已经是完整代码，_convert_stock_code 会直接返回）
+        yf_code = self._convert_stock_code(appropriate_code)
         
         logger.debug(f"调用 yfinance.download({yf_code}, {start_date}, {end_date})")
         

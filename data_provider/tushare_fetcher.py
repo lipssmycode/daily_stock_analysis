@@ -227,8 +227,10 @@ class TushareFetcher(BaseFetcher):
         # 速率限制检查
         self._check_rate_limit()
         
-        # 转换代码格式
-        ts_code = self._convert_stock_code(stock_code)
+        # 优先使用 stock_full_code_list 中的完整代码
+        appropriate_code = self.get_appropriate_stock_code(stock_code)
+        # 转换代码格式（如果已经是完整代码，_convert_stock_code 会直接返回）
+        ts_code = self._convert_stock_code(appropriate_code)
         
         # 转换日期格式（Tushare 要求 YYYYMMDD）
         ts_start = start_date.replace('-', '')

@@ -95,6 +95,36 @@ class BaseFetcher(ABC):
         """
         pass
     
+    def get_appropriate_stock_code(self, stock_code: str) -> str:
+        """
+        获取适合当前 fetcher 的股票代码格式
+        
+        如果 stock_full_code_list 有值且包含该股票，直接使用完整代码
+        否则返回原始代码（让子类的 _convert_stock_code 方法处理）
+        
+        Args:
+            stock_code: 股票代码（可能是纯数字或完整代码）
+            
+        Returns:
+            适合当前 fetcher 的股票代码
+        """
+        from config import get_config
+        config = get_config()
+        
+        # 如果 stock_full_code_list 有值，尝试查找匹配的完整代码
+        if config.stock_full_code_list:
+            # 检查完整代码列表中是否包含该代码
+            for full_code in config.stock_full_code_list:
+                # 比较时不区分大小写
+                if full_code.upper() == stock_code.upper():
+                    return full_code
+                # 检查是否是纯数字代码匹配
+                if full_code.replace('.SH', '').replace('.SZ', '').replace('.sh', '').replace('.sz', '') == stock_code:
+                    return full_code
+        
+        # 未找到匹配的完整代码，返回原始代码
+        return stock_code
+
     def get_daily_data(
         self, 
         stock_code: str, 

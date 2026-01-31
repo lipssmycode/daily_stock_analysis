@@ -11,11 +11,13 @@ A股自选股智能分析系统 - 配置管理模块
 """
 
 import os
+import logging
 from pathlib import Path
 from typing import List, Optional
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Config:
@@ -29,7 +31,8 @@ class Config:
     """
     
     # === 自选股配置 ===
-    stock_list: List[str] = field(default_factory=list)
+    stock_list: List[str] = field(default_factory=list)  # 纯数字代码（如 600519, 000001）
+    stock_full_code_list: List[str] = field(default_factory=list)  # 完整代码（如 600519.SH, 700.HK）
 
     # === 飞书云文档配置 ===
     feishu_app_id: Optional[str] = None
@@ -43,6 +46,7 @@ class Config:
     longport_app_key: Optional[str] = None
     longport_app_secret: Optional[str] = None
     longport_access_token: Optional[str] = None
+    longbridge_watchlist_group: Optional[str] = None  # 长桥自选股分组名称（优先级最高）
     
     # === AI 分析配置 ===
     gemini_api_key: Optional[str] = None
@@ -237,6 +241,7 @@ class Config:
             longport_app_key=os.getenv('LONGPORT_APP_KEY'),
             longport_app_secret=os.getenv('LONGPORT_APP_SECRET'),
             longport_access_token=os.getenv('LONGPORT_ACCESS_TOKEN'),
+            longbridge_watchlist_group=os.getenv('LONGBRIDGE_WATCHLIST_GROUP'),
             gemini_api_key=os.getenv('GEMINI_API_KEY'),
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview'),
             gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash'),
@@ -312,13 +317,46 @@ class Config:
 
     def refresh_stock_list(self) -> None:
         """
-        热读取 STOCK_LIST 环境变量并更新配置中的自选股列表
+        热读取自选股列表并更新配置中的自选股列表
+        
+        同时填充两个列表：
+        - stock_list: 纯数字代码（如 600519, 000001）
+        - stock_full_code_list: 完整代码（如 600519.SH, 700.HK）
+        
+        优先级逻辑：
+        1. 如果配置了 longbridge_watchlist_group，优先从长桥自选股分组获取
+        2. 否则从 STOCK_LIST 环境变量读取
         
         支持两种配置方式：
         1. .env 文件（本地开发、定时任务模式） - 修改后下次执行自动生效
         2. 系统环境变量（GitHub Actions、Docker） - 启动时固定，运行中不变
         """
-        # 若 .env 中配置了 STOCK_LIST，则以 .env 为准；否则回退到系统环境变量
+        # 优先级 1: 尝试从长桥自选股分组获取
+        if self.longbridge_watchlist_group:
+            try:
+                from data_provider.longbridge_fetcher import LongbridgeFetcher
+                
+                logger.info(f"检测到长桥自选股分组配置: {self.longbridge_watchlist_group}，尝试从长桥获取...")
+                fetcher = LongbridgeFetcher()
+                
+                if fetcher.is_available():
+                    full_code_list = fetcher.get_watchlist_from_group(group_name=self.longbridge_watchlist_group)
+                    if full_code_list:
+                        self.stock_full_code_list = full_code_list
+                        # 提取纯数字代码（去除后缀）
+                        self.stock_list = self._extract_numeric_codes(full_code_list)
+                        logger.info(f"✅ 成功从长桥自选股分组 '{self.longbridge_watchlist_group}' 获取到 {len(full_code_list)} 只股票")
+                        logger.info(f"   完整代码列表: {self.stock_full_code_list}")
+                        logger.info(f"   纯数字代码列表: {self.stock_list}")
+                        return
+                    else:
+                        logger.warning(f"长桥自选股分组 '{self.longbridge_watchlist_group}' 为空或不存在，回退到 STOCK_LIST")
+                else:
+                    logger.warning("Longbridge 数据源不可用，回退到 STOCK_LIST")
+            except Exception as e:
+                logger.warning(f"从长桥自选股分组获取失败: {e}，回退到 STOCK_LIST")
+        
+        # 优先级 2: 从 STOCK_LIST 环境变量读取
         env_path = Path(__file__).parent / '.env'
         stock_list_str = ''
         if env_path.exists():
@@ -338,6 +376,71 @@ class Config:
             stock_list = ['000001']
 
         self.stock_list = stock_list
+        # 当从 STOCK_LIST 获取时，stock_full_code_list 为空，需要时动态转换
+        self.stock_full_code_list = []
+        logger.info(f"从 STOCK_LIST 获取股票列表: {self.stock_list}")
+    
+    def _extract_numeric_codes(self, full_code_list: List[str]) -> List[str]:
+        """
+        从完整代码列表中提取纯数字代码
+        
+        转换规则：
+        - 600519.SH -> 600519
+        - 000001.SZ -> 000001
+        - 700.HK -> 700.HK (港股保留后缀)
+        - AAPL.US -> AAPL.US (美股保留后缀)
+        
+        Args:
+            full_code_list: 完整代码列表，如 ['600519.SH', '000001.SZ', '700.HK']
+            
+        Returns:
+            纯数字代码列表，如 ['600519', '000001', '700.HK']
+        """
+        numeric_codes = []
+        for code in full_code_list:
+            code_upper = code.upper()
+            if '.SH' in code_upper or '.SZ' in code_upper:
+                # A股去除后缀
+                numeric_codes.append(code.replace('.SH', '').replace('.SZ', '').replace('.sh', '').replace('.sz', ''))
+            else:
+                # 港股、美股等保留后缀
+                numeric_codes.append(code)
+        return numeric_codes
+    
+    def convert_to_full_code(self, numeric_code: str) -> str:
+        """
+        将纯数字代码转换为完整代码（带后缀）
+        
+        转换规则：
+        - 600519 -> 600519.SH (沪市)
+        - 000001 -> 000001.SZ (深市)
+        - 700 -> 700.HK (假设是港股)
+        - AAPL -> AAPL.US (假设是美股)
+        
+        Args:
+            numeric_code: 纯数字代码，如 '600519'
+            
+        Returns:
+            完整代码，如 '600519.SH'
+        """
+        code = numeric_code.strip()
+        
+        # 已经包含后缀的情况，直接返回
+        if '.' in code.upper():
+            return code
+        
+        # 纯数字代码，根据前缀判断市场
+        if code.isdigit():
+            if code.startswith(('600', '601', '603', '688')):
+                return f"{code}.SH"
+            elif code.startswith(('000', '002', '300')):
+                return f"{code}.SZ"
+            else:
+                # 默认认为是港股
+                return f"{code}.HK"
+        else:
+            # 字母代码，认为是美股
+            return f"{code}.US"
     
     def validate(self) -> List[str]:
         """

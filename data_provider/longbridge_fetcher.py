@@ -303,8 +303,10 @@ class LongbridgeFetcher(BaseFetcher):
         # 速率限制检查
         self._rate_limiter.acquire()
         
-        # 转换代码格式
-        symbol = self._convert_stock_code(stock_code)
+        # 优先使用 stock_full_code_list 中的完整代码
+        appropriate_code = self.get_appropriate_stock_code(stock_code)
+        # 转换代码格式（如果已经是完整代码，_convert_stock_code 会直接返回）
+        symbol = self._convert_stock_code(appropriate_code)
         
         # 解析日期
         start_dt = self._parse_date(start_date)
@@ -387,6 +389,342 @@ class LongbridgeFetcher(BaseFetcher):
         df = df[existing_cols]
         
         return df
+
+    def get_watchlist_from_group(self, group_name: str = None, group_id: int = None) -> list[str]:
+        """
+        从长桥自选股分组中获取股票代码列表
+        
+        支持通过分组名称或分组ID来获取股票列表
+        
+        Args:
+            group_name: 分组名称（优先使用）
+            group_id: 分组ID（当group_name为None时使用）
+            
+        Returns:
+            股票代码列表，格式如 ['600519', '000001', '700.HK']
+            
+        Raises:
+            DataFetchError: 获取失败时抛出
+        """
+        if self._api is None:
+            raise DataFetchError("Longbridge API 未初始化，请检查配置")
+        
+        # 速率限制检查
+        self._rate_limiter.acquire()
+        
+        try:
+            from longport.openapi import WatchlistGroup
+            
+            # 调用 watchlist() 方法获取所有分组
+            logger.debug(f"调用 Longbridge watchlist() 获取自选股分组")
+            resp: list[WatchlistGroup] = self._api.watchlist()
+            
+            if not resp or len(resp) == 0:
+                logger.warning("长桥自选股分组列表为空")
+                return []
+            
+            # 查找指定的分组
+            target_group = None
+            
+            if group_name:
+                # 优先通过分组名称查找
+                for group in resp:
+                    if group.name == group_name:
+                        target_group = group
+                        logger.info(f"找到长桥自选股分组: {group_name} (ID: {group.id})")
+                        break
+                if not target_group:
+                    logger.warning(f"未找到长桥自选股分组: {group_name}")
+                    # 打印所有可用的分组名称
+                    available_groups = [g.name for g in resp]
+                    logger.info(f"可用的分组名称: {', '.join(available_groups)}")
+            elif group_id is not None:
+                # 通过分组ID查找
+                for group in resp:
+                    if group.id == group_id:
+                        target_group = group
+                        logger.info(f"找到长桥自选股分组: ID={group_id} (名称: {group.name})")
+                        break
+                if not target_group:
+                    logger.warning(f"未找到长桥自选股分组 ID: {group_id}")
+            else:
+                # 未指定分组，返回第一个分组（通常是"all"）
+                target_group = resp.groups[0]
+                logger.info(f"未指定分组，使用默认分组: {target_group.name} (ID: {target_group.id})")
+            
+            # 提取股票代码
+            if target_group and target_group.securities:
+                stock_codes = []
+                for security in target_group.securities:
+                    # 将 symbol 转换为标准格式（如 700.HK -> 700.HK, 600519.SH -> 600519）
+                    symbol = security.symbol
+                    stock_codes.append(symbol)
+                
+                logger.info(f"从长桥自选股分组获取到 {len(stock_codes)} 只股票: {', '.join(stock_codes)}")
+                return stock_codes
+            else:
+                logger.warning(f"长桥自选股分组 '{target_group.name if target_group else 'unknown'}' 中没有股票")
+                return []
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # 检测限流
+            if any(keyword in error_msg for keyword in ['限流', 'limit', 'quota', '配额']):
+                logger.warning(f"Longbridge 速率限制: {e}")
+                raise RateLimitError(f"Longbridge 速率限制: {e}") from e
+            
+            # 检测权限问题
+            if any(keyword in error_msg for keyword in ['权限', 'permission', '无权限']):
+                logger.warning(f"Longbridge 权限不足: {e}")
+                raise DataFetchError(f"Longbridge 权限不足，请开通行情权限: {e}") from e
+            
+            raise DataFetchError(f"获取长桥自选股分组失败: {e}") from e
+    
+    def get_realtime_quote_batch(self, symbols: list[str]) -> Optional[dict[str, dict[str, Optional]]]:
+        """
+        批量获取实时行情（替代 ak.stock_zh_a_spot_em）
+        
+        限制：
+        - 每次请求最多 500 个标的
+        - 需要配置 LONGPORT_APP_KEY, LONGPORT_APP_SECRET, LONGPORT_ACCESS_TOKEN
+        - 只返回 A 股数据（.SH, .SZ 结尾）
+        
+        Args:
+            symbols: 股票代码列表，如 ['600519.SH', '000001.SZ', '700.HK']
+                   如果传入纯数字代码，会自动转换为 Longbridge 格式
+            
+        Returns:
+            Dict[str, Dict[str, Any]]: 股票代码到行情数据的映射
+            格式: {
+                '600519.SH': {
+                    '代码': '600519.SH',
+                    '名称': '贵州茅台',
+                    '最新价': 1850.0,
+                    '昨收价': 1845.0,
+                    '今开': 1852.0,
+                    '最高': 1860.0,
+                    '最低': 1848.0,
+                    '成交量': 1234567,
+                    '成交额': 2288888888.0,
+                    '涨跌幅': 0.27,
+                    '涨跌额': 5.0,
+                    '振幅': 0.65,
+                    ...
+                }
+            }
+        """
+        if not self._api:
+            logger.warning("Longbridge API 未初始化，无法获取实时行情")
+            return None
+        
+        # 过滤并转换股票代码为 Longbridge 格式
+        longbridge_symbols = []
+        for symbol in symbols:
+            # 转换为 Longbridge 格式
+            lb_symbol = self._convert_stock_code(symbol)
+            # 只保留 A 股（.SH, .SZ 结尾）
+            if lb_symbol.endswith('.SH') or lb_symbol.endswith('.SZ'):
+                longbridge_symbols.append(lb_symbol)
+        
+        if not longbridge_symbols:
+            logger.warning(f"没有 A 股代码需要获取实时行情")
+            return None
+        
+        logger.info(f"[Longbridge] 准备获取 {len(longbridge_symbols)} 只 A 股的实时行情")
+        
+        try:
+            # 速率限制检查
+            self._rate_limiter.acquire()
+            
+            # 分批查询（每批最多 500 个）
+            batch_size = 500
+            all_quotes = {}
+            
+            for i in range(0, len(longbridge_symbols), batch_size):
+                batch = longbridge_symbols[i:i + batch_size]
+                
+                logger.debug(f"[Longbridge] 调用 quote() 接口，批次 {i//batch_size + 1}，{len(batch)} 只股票")
+                
+                # 调用 Longbridge API
+                resp = self._api.quote(batch)
+                
+                # 解析响应
+                for quote in resp:
+                    symbol = str(quote.symbol)
+                    
+                    # 计算涨跌幅
+                    last_done = float(quote.last_done) if quote.last_done else 0.0
+                    prev_close = float(quote.prev_close) if quote.prev_close else 0.0
+                    change_pct = 0.0
+                    if prev_close > 0:
+                        change_pct = (last_done - prev_close) / prev_close * 100
+                    
+                    change_amount = last_done - prev_close
+                    
+                    # 计算振幅
+                    high = float(quote.high) if quote.high else 0.0
+                    low = float(quote.low) if quote.low else 0.0
+                    amplitude = 0.0
+                    if prev_close > 0:
+                        amplitude = (high - low) / prev_close * 100
+                    
+                    all_quotes[symbol] = {
+                        '代码': symbol,
+                        '名称': '',  # 需要从 STOCK_NAME_MAP 或其他接口获取
+                        '最新价': last_done,
+                        '昨收价': prev_close,
+                        '今开': float(quote.open) if quote.open else 0.0,
+                        '最高': high,
+                        '最低': low,
+                        '成交量': int(quote.volume) if quote.volume else 0,
+                        '成交额': float(quote.turnover) if quote.turnover else 0.0,
+                        '涨跌幅': round(change_pct, 2),
+                        '涨跌额': round(change_amount, 2),
+                        '振幅': round(amplitude, 2),
+                        '量比': 0.0,  # 需要额外计算
+                        '换手率': 0.0,  # 需要额外计算
+                        '市盈率-动态': 0.0,  # 需要额外获取
+                        '市净率': 0.0,  # 需要额外获取
+                        '总市值': 0.0,  # 需要额外获取
+                        '流通市值': 0.0,  # 需要额外获取
+                        '涨速': 0.0,
+                        '5分钟涨跌': 0.0,
+                        '60日涨跌幅': 0.0,
+                        '年初至今涨跌幅': 0.0,
+                    }
+                
+                logger.info(f"[Longbridge] 批次 {i//batch_size + 1} 完成，获取到 {len(resp)} 只股票的实时行情")
+            
+            logger.info(f"[Longbridge] 实时行情获取完成，共 {len(all_quotes)} 只股票")
+            return all_quotes
+            
+        except Exception as e:
+            logger.error(f"[Longbridge] 获取实时行情失败: {e}")
+            return None
+    
+    def get_realtime_quote_with_indexes(self, symbols: list[str]) -> Optional[dict[str, dict[str, Optional]]]:
+        """
+        使用 calc_indexes 接口获取实时行情和计算指标（推荐使用）
+        
+        该接口返回的计算指标包括：
+        - 最新价、涨跌额、涨跌幅
+        - 成交量、成交额
+        - 换手率、量比、振幅
+        - 总市值、流入资金
+        - 市盈率(TTM)、市净率
+        - 股息率(TTM)
+        - 五日/十日/半年涨幅
+        - 五分钟涨幅
+        
+        Args:
+            symbols: 股票代码列表，如 ['600519.SH', '000001.SZ']
+                   如果传入纯数字代码，会自动转换为 Longbridge 格式
+                   
+        Returns:
+            Dict[str, Dict[str, Any]]: 股票代码到行情数据的映射
+            格式: {
+                '600519.SH': {
+                    '代码': '600519.SH',
+                    '最新价': 1850.0,
+                    '涨跌额': 5.0,
+                    '涨跌幅': 0.27,
+                    '成交量': 1234567,
+                    '成交额': 2288888888.0,
+                    '换手率': 0.15,
+                    '量比': 1.2,
+                    '振幅': 0.65,
+                    '总市值': 2345678900000.0,
+                    '流入资金': 123456789.0,
+                    '市盈率': 21.26,
+                    '市净率': 31.71,
+                    '股息率': 0.64,
+                    '五日涨幅': -9.76,
+                    '十日涨幅': -11.87,
+                    '半年涨幅': -7.01,
+                    '五分钟涨幅': 0.0,
+                    ...
+                }
+            }
+        """
+        if not self._api:
+            logger.warning("Longbridge API 未初始化，无法获取实时行情")
+            return None
+        
+        # 转换股票代码为 Longbridge 格式
+        longbridge_symbols = []
+        for symbol in symbols:
+            lb_symbol = self._convert_stock_code(symbol)
+            longbridge_symbols.append(lb_symbol)
+        
+        logger.info(f"[Longbridge] 准备获取 {len(longbridge_symbols)} 只股票的实时行情和计算指标")
+        
+        try:
+            # 速率限制检查
+            self._rate_limiter.acquire()
+            
+            # 导入 CalcIndex 枚举
+            from longport.openapi import CalcIndex
+            
+            # 指定需要获取的计算指标
+            # 主要指标：最新价、涨跌、成交量、成交额、换手率、量比、振幅、市值、PE、PB
+            calc_indexes = [
+                CalcIndex.LastDone,           # 最新价
+                CalcIndex.ChangeValue,          # 涨跌额
+                CalcIndex.ChangeRate,         # 涨跌幅
+                CalcIndex.Volume,             # 成交量
+                CalcIndex.Turnover,           # 成交额
+                CalcIndex.TurnoverRate,       # 换手率
+                CalcIndex.VolumeRatio,        # 量比
+                CalcIndex.Amplitude,          # 振幅
+                CalcIndex.TotalMarketValue,   # 总市值
+                CalcIndex.CapitalFlow,        # 资金流入
+                CalcIndex.PeTtmRatio,         # 市盈率(TTM)
+                CalcIndex.PbRatio,            # 市净率
+                CalcIndex.FiveDayChangeRate,  # 五日涨幅
+                CalcIndex.TenDayChangeRate,   # 十日涨幅
+                CalcIndex.HalfYearChangeRate, # 半年涨幅
+                CalcIndex.FiveMinutesChangeRate,  # 五分钟涨幅
+            ]
+            
+            logger.debug(f"[Longbridge] 调用 calc_indexes() 接口，{len(longbridge_symbols)} 只股票，{len(calc_indexes)} 个指标")
+            
+            # 调用 Longbridge API
+            resp = self._api.calc_indexes(longbridge_symbols, calc_indexes)
+            
+            # 解析响应
+            all_quotes = {}
+            for quote in resp:
+                symbol = str(quote.symbol)
+                
+                # 映射字段名到中文（与 Akshare 保持一致）
+                all_quotes[symbol] = {
+                    '代码': symbol,
+                    '最新价': float(quote.last_done) if quote.last_done else 0.0,
+                    '涨跌额': float(quote.change_value) if quote.change_value else 0.0,
+                    '涨跌幅': float(quote.change_rate) if quote.change_rate else 0.0,
+                    '成交量': int(quote.volume) if quote.volume else 0,
+                    '成交额': float(quote.turnover) if quote.turnover else 0.0,
+                    '换手率': float(quote.turnover_rate) if quote.turnover_rate else 0.0,
+                    '量比': float(quote.volume_ratio) if quote.volume_ratio else 0.0,
+                    '振幅': float(quote.amplitude) if quote.amplitude else 0.0,
+                    '总市值': float(quote.total_market_value) if quote.total_market_value else 0.0,
+                    '流入资金': float(quote.capital_flow) if quote.capital_flow else 0.0,
+                    '市盈率': float(quote.pe_ttm_ratio) if quote.pe_ttm_ratio else 0.0,
+                    '市净率': float(quote.pb_ratio) if quote.pb_ratio else 0.0,
+                    '股息率': float(quote.dividend_ratio_ttm) if quote.dividend_ratio_ttm else 0.0,
+                    '五日涨幅': float(quote.five_day_change_rate) if quote.five_day_change_rate else 0.0,
+                    '十日涨幅': float(quote.ten_day_change_rate) if quote.ten_day_change_rate else 0.0,
+                    '半年涨幅': float(quote.half_year_change_rate) if quote.half_year_change_rate else 0.0,
+                    '五分钟涨幅': float(quote.five_minutes_change_rate) if quote.five_minutes_change_rate else 0.0,
+                }
+            
+            logger.info(f"[Longbridge] calc_indexes 获取成功，共 {len(all_quotes)} 只股票")
+            return all_quotes
+            
+        except Exception as e:
+            logger.error(f"[Longbridge] calc_indexes 获取实时行情失败: {e}")
+            return None
 
 
 if __name__ == "__main__":
