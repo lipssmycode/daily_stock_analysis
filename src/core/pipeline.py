@@ -615,6 +615,8 @@ class StockAnalysisPipeline:
                         non_wechat_success = self.notifier.send_to_pushover(report) or non_wechat_success
                     elif channel == NotificationChannel.ASTRBOT:
                         non_wechat_success = self.notifier.send_to_astrbot(report) or non_wechat_success
+                    elif channel == NotificationChannel.SERVERCHAN:
+                        non_wechat_success = self.notifier.send_to_serverchan(report) or non_wechat_success
                     else:
                         logger.warning(f"未知通知渠道: {channel}")
 
