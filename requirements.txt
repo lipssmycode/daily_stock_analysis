@@ -16,6 +16,9 @@ longport>=3.0.20            # Priority 2: Longprot API
 baostock>=0.8.0             # Priority 3: 证券宝数据
 yfinance>=0.2.0             # Priority 4: Yahoo Finance (Fallback)
 
+# Chrome 自动化
+playwright>=1.40.0         # Chrome 远程调试爬虫
+
 #飞书
 lark-oapi>=1.0.0             # 飞书API
 

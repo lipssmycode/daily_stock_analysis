@@ -282,8 +282,31 @@ class MarketAnalyzer:
         try:
             logger.info("[大盘] 获取板块涨跌榜...")
             
-            # 获取行业板块行情
-            df = self._call_akshare_with_retry(ak.stock_board_industry_name_em, "行业板块行情", attempts=2)
+            # 优先使用 Chrome Fetcher 获取行业板块行情
+            df = None
+            try:
+                from data_provider.chrome_fetcher import ChromeFetcher
+                chrome_fetcher = ChromeFetcher()
+                
+                if chrome_fetcher.is_available():
+                    logger.info("[大盘] 使用 Chrome Fetcher 获取行业板块...")
+                    
+                    # 获取行业板块数据
+                    sectors = chrome_fetcher.get_industry_sectors()
+                    
+                    if sectors and len(sectors) > 0:
+                        # 转换为 DataFrame
+                        df = pd.DataFrame(sectors)
+                        logger.info(f"[大盘] [Chrome] 成功获取 {len(sectors)} 个行业板块")
+                    else:
+                        logger.warning("[大盘] [Chrome] 未获取到行业板块数据，降级到 Akshare")
+            except Exception as e:
+                logger.warning(f"[大盘] Chrome Fetcher 获取板块行情失败: {e}，降级到 Akshare")
+            
+            # 如果 Chrome Fetcher 不可用或失败，使用 Akshare
+            if df is None:
+                logger.info("[大盘] 使用 Akshare 获取行业板块...")
+                df = self._call_akshare_with_retry(ak.stock_board_industry_name_em, "行业板块行情", attempts=2)
             
             if df is not None and not df.empty:
                 change_col = '涨跌幅'
