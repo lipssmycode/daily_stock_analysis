@@ -16,11 +16,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
-import akshare as ak
 import pandas as pd
 
-from config import get_config
-from search_service import SearchService
+from src.config import get_config
+from src.search_service import SearchService
+from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ class MarketOverview:
     limit_up_count: int = 0             # 涨停家数
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
-    north_flow: float = 0.0             # 北向资金净流入（亿元）
+    # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
@@ -87,20 +87,10 @@ class MarketAnalyzer:
     5. 生成大盘复盘报告
     """
     
-    # 主要指数代码
-    MAIN_INDICES = {
-        'sh000001': '上证指数',
-        'sz399001': '深证成指',
-        'sz399006': '创业板指',
-        'sh000688': '科创50',
-        'sh000016': '上证50',
-        'sh000300': '沪深300',
-    }
-    
     def __init__(self, search_service: Optional[SearchService] = None, analyzer=None):
         """
         初始化大盘分析器
-        
+
         Args:
             search_service: 搜索服务实例
             analyzer: AI分析器实例（用于调用LLM）
@@ -108,7 +98,8 @@ class MarketAnalyzer:
         self.config = get_config()
         self.search_service = search_service
         self.analyzer = analyzer
-        
+        self.data_manager = DataFetcherManager()
+
     def get_market_overview(self) -> MarketOverview:
         """
         获取市场概览数据
@@ -133,129 +124,82 @@ class MarketAnalyzer:
         
         return overview
 
-    def _call_akshare_with_retry(self, fn, name: str, attempts: int = 2):
-        last_error: Optional[Exception] = None
-        for attempt in range(1, attempts + 1):
-            try:
-                return fn()
-            except Exception as e:
-                last_error = e
-                logger.warning(f"[大盘] {name} 获取失败 (attempt {attempt}/{attempts}): {e}")
-                if attempt < attempts:
-                    time.sleep(min(2 ** attempt, 5))
-        logger.error(f"[大盘] {name} 最终失败: {last_error}")
-        return None
     
     def _get_main_indices(self) -> List[MarketIndex]:
         """获取主要指数实时行情"""
         indices = []
-        
+
         try:
             logger.info("[大盘] 获取主要指数实时行情...")
-            
-            # 使用 akshare 获取指数行情（新浪财经接口，包含深市指数）
-            df = self._call_akshare_with_retry(ak.stock_zh_index_spot_sina, "指数行情", attempts=2)
-            
-            if df is not None and not df.empty:
-                for code, name in self.MAIN_INDICES.items():
-                    # 查找对应指数
-                    row = df[df['代码'] == code]
-                    if row.empty:
-                        # 尝试带前缀查找
-                        row = df[df['代码'].str.contains(code)]
-                    
-                    if not row.empty:
-                        row = row.iloc[0]
-                        index = MarketIndex(
-                            code=code,
-                            name=name,
-                            current=float(row.get('最新价', 0) or 0),
-                            change=float(row.get('涨跌额', 0) or 0),
-                            change_pct=float(row.get('涨跌幅', 0) or 0),
-                            open=float(row.get('今开', 0) or 0),
-                            high=float(row.get('最高', 0) or 0),
-                            low=float(row.get('最低', 0) or 0),
-                            prev_close=float(row.get('昨收', 0) or 0),
-                            volume=float(row.get('成交量', 0) or 0),
-                            amount=float(row.get('成交额', 0) or 0),
-                        )
-                        # 计算振幅
-                        if index.prev_close > 0:
-                            index.amplitude = (index.high - index.low) / index.prev_close * 100
-                        indices.append(index)
-                        
+
+            # 使用 DataFetcherManager 获取指数行情
+            # Manager 会自动尝试：Akshare -> Tushare -> Yfinance
+            data_list = self.data_manager.get_main_indices()
+
+            if data_list:
+                for item in data_list:
+                    index = MarketIndex(
+                        code=item['code'],
+                        name=item['name'],
+                        current=item['current'],
+                        change=item['change'],
+                        change_pct=item['change_pct'],
+                        open=item['open'],
+                        high=item['high'],
+                        low=item['low'],
+                        prev_close=item['prev_close'],
+                        volume=item['volume'],
+                        amount=item['amount'],
+                        amplitude=item['amplitude']
+                    )
+                    indices.append(index)
+
+            if not indices:
+                logger.warning("[大盘] 所有行情数据源失败，将依赖新闻搜索进行分析")
+            else:
                 logger.info(f"[大盘] 获取到 {len(indices)} 个指数行情")
-                
+
         except Exception as e:
             logger.error(f"[大盘] 获取指数行情失败: {e}")
-        
+
         return indices
-    
+
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""
         try:
             logger.info("[大盘] 获取市场涨跌统计...")
-            
-            # 获取全部A股实时行情
-            df = self._call_akshare_with_retry(ak.stock_zh_a_spot_em, "A股实时行情", attempts=2)
-            
-            if df is not None and not df.empty:
-                # 涨跌统计
-                change_col = '涨跌幅'
-                if change_col in df.columns:
-                    df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-                    overview.up_count = len(df[df[change_col] > 0])
-                    overview.down_count = len(df[df[change_col] < 0])
-                    overview.flat_count = len(df[df[change_col] == 0])
-                    
-                    # 涨停跌停统计（涨跌幅 >= 9.9% 或 <= -9.9%）
-                    overview.limit_up_count = len(df[df[change_col] >= 9.9])
-                    overview.limit_down_count = len(df[df[change_col] <= -9.9])
-                
-                # 两市成交额
-                amount_col = '成交额'
-                if amount_col in df.columns:
-                    df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
-                    overview.total_amount = df[amount_col].sum() / 1e8  # 转为亿元
-                
+
+            stats = self.data_manager.get_market_stats()
+
+            if stats:
+                overview.up_count = stats.get('up_count', 0)
+                overview.down_count = stats.get('down_count', 0)
+                overview.flat_count = stats.get('flat_count', 0)
+                overview.limit_up_count = stats.get('limit_up_count', 0)
+                overview.limit_down_count = stats.get('limit_down_count', 0)
+                overview.total_amount = stats.get('total_amount', 0.0)
+
                 logger.info(f"[大盘] 涨:{overview.up_count} 跌:{overview.down_count} 平:{overview.flat_count} "
                           f"涨停:{overview.limit_up_count} 跌停:{overview.limit_down_count} "
                           f"成交额:{overview.total_amount:.0f}亿")
-                
+
         except Exception as e:
             logger.error(f"[大盘] 获取涨跌统计失败: {e}")
-    
+
     def _get_sector_rankings(self, overview: MarketOverview):
         """获取板块涨跌榜"""
         try:
             logger.info("[大盘] 获取板块涨跌榜...")
-            
-            # 获取行业板块行情
-            df = self._call_akshare_with_retry(ak.stock_board_industry_name_em, "行业板块行情", attempts=2)
-            
-            if df is not None and not df.empty:
-                change_col = '涨跌幅'
-                if change_col in df.columns:
-                    df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-                    df = df.dropna(subset=[change_col])
-                    
-                    # 涨幅前5
-                    top = df.nlargest(5, change_col)
-                    overview.top_sectors = [
-                        {'name': row['板块名称'], 'change_pct': row[change_col]}
-                        for _, row in top.iterrows()
-                    ]
-                    
-                    # 跌幅前5
-                    bottom = df.nsmallest(5, change_col)
-                    overview.bottom_sectors = [
-                        {'name': row['板块名称'], 'change_pct': row[change_col]}
-                        for _, row in bottom.iterrows()
-                    ]
-                    
-                    logger.info(f"[大盘] 领涨板块: {[s['name'] for s in overview.top_sectors]}")
-                    logger.info(f"[大盘] 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
-                    
+
+            top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(5)
+
+            if top_sectors or bottom_sectors:
+                overview.top_sectors = top_sectors
+                overview.bottom_sectors = bottom_sectors
+
+                logger.info(f"[大盘] 领涨板块: {[s['name'] for s in overview.top_sectors]}")
+                logger.info(f"[大盘] 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
+
         except Exception as e:
             logger.error(f"[大盘] 获取板块涨跌榜失败: {e}")
     
@@ -293,13 +237,13 @@ class MarketAnalyzer:
         
         all_news = []
         today = datetime.now()
-        month_str = f"{today.year}年{today.month}月"
-        
+        date_str = today.strftime('%Y年%m月%d日')
+
         # 多维度搜索
         search_queries = [
-            f"A股 大盘 复盘 {month_str}",
-            f"股市 行情 分析 今日 {month_str}",
-            f"A股 市场 热点 板块 {month_str}",
+            "A股 大盘 复盘",
+            "股市 行情 分析",
+            "A股 市场 热点 板块",
         ]
         
         try:
@@ -397,7 +341,7 @@ class MarketAnalyzer:
                 snippet = n.get('snippet', '')[:100]
             news_text += f"{i}. {title}\n   {snippet}\n"
         
-        prompt = f"""你是一位专业的A股市场分析师，请根据以下数据生成一份简洁的大盘复盘报告。
+        prompt = f"""你是一位专业的A/H/美股市场分析师，请根据以下数据生成一份简洁的大盘复盘报告。
 
 【重要】输出要求：
 - 必须输出纯 Markdown 文本格式
@@ -413,20 +357,21 @@ class MarketAnalyzer:
 {overview.date}
 
 ## 主要指数
-{indices_text}
+{indices_text if indices_text else "暂无指数数据（接口异常）"}
 
 ## 市场概况
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
 - 两市成交额: {overview.total_amount:.0f} 亿元
-- 北向资金: {overview.north_flow:+.2f} 亿元
 
 ## 板块表现
-领涨: {top_sectors_text}
-领跌: {bottom_sectors_text}
+领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
+领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}
 
 ## 市场新闻
 {news_text if news_text else "暂无相关新闻"}
+
+{"注意：由于行情数据获取失败，请主要根据【市场新闻】进行定性分析和总结，不要编造具体的指数点位。" if not indices_text else ""}
 
 ---
 
@@ -441,7 +386,7 @@ class MarketAnalyzer:
 （分析上证、深证、创业板等各指数走势特点）
 
 ### 三、资金动向
-（解读成交额和北向资金流向的含义）
+（解读成交额流向的含义）
 
 ### 四、热点解读
 （分析领涨领跌板块背后的逻辑和驱动因素）
@@ -501,7 +446,6 @@ class MarketAnalyzer:
 | 涨停 | {overview.limit_up_count} |
 | 跌停 | {overview.limit_down_count} |
 | 两市成交额 | {overview.total_amount:.0f}亿 |
-| 北向资金 | {overview.north_flow:+.2f}亿 |
 
 ### 四、板块表现
 - **领涨**: {top_text}
